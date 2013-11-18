@@ -37,6 +37,7 @@ from SeqFindR import imaging
 from SeqFindR import config
 from SeqFindR import util
 from SeqFindR import blast
+import subprocess, shutil
 
 __title__        = 'SeqFindR'
 __version__      = '0.26'
@@ -92,6 +93,40 @@ def prepare_queries(args):
             sys.exit(1)
     return query_list, query_classes
 
+def effector_queries(args):
+    """
+    Given EFFECTORFAM HMM LIST, extract all query & query classes
+    e.g. 
+    Efam00001>--GogB Type 3 effector protein>---GogB like effector protein 
+    found in Salmonella>-497>6>--71.4>---24
+
+    query = gene id
+    query_class = class
+
+    Location of EFFECTORFAM HMM LIST is defined by args.seqs_of_interest
+
+    :param args: the argparse args containing args.seqs_of_interest 
+                 (fullpath) to EFFECTORFAM LIST
+
+    :type args: argparse args
+
+    :rtype: 2 lists, 1) of all queries and, 2) corresponding query classes
+    """
+    query_list, query_classes = [], []
+    with open(args.seqs_of_interest, "rU") as fin:
+        for cur in fin.readlines(): 
+            ar = cur.split('\t')
+            query_list.append('%s-%s' %(ar[0], ar[1].split('Type 3')[0].strip()) )
+            query_classes.append('Effector')
+    unique = list(set(query_list))
+    sys.stderr.write("Investigating %i features\n" % (len(unique)))
+    for e in unique:
+        if query_list.count(e) != 1:
+            sys.stderr.write("Duplicates found for: %s\n" % (e))
+            sys.stderr.write("Fix duplicates\n")
+            sys.exit(1)
+    return query_list, query_classes
+    
 
 def strip_bases(args):
     """
@@ -317,14 +352,63 @@ def do_run(args, data_path, match_score, vfs_list):
         strain_id = blast.make_BLAST_database(subject)
         y_label.append(strain_id)
         database      = os.path.basename(subject)
-        blast_xml     = blast.run_BLAST(args.seqs_of_interest, os.path.join(os.getcwd(), "DBs/"+database), args)
-        accepted_hits = blast.parse_BLAST(blast_xml, float(args.tol))
+        #### EFFECTORFAM CHAN GE #### 
+        if args.effector != None:
+            accepted_hits = effector_parse(effector_run(subject, args.effector) )
+            print accepted_hits
+        else: 
+            blast_xml     = blast.run_BLAST(args.seqs_of_interest, os.path.join(os.getcwd(), "DBs/"+database), args)
+            accepted_hits = blast.parse_BLAST(blast_xml, float(args.tol))
         row = build_matrix_row(vfs_list, accepted_hits, match_score)
         row.insert(0,strain_id)
         matrix.append(row)
     return matrix, y_label
 
 
+def effector_run(query, effectorloc):
+    """
+    Given a mfa of query sequences of interest, Searches for Effectors
+    Requires effectorloc as the location of the effectorFam perl script
+
+    :param query: the fullpath to the query genome 
+    :param effectorloc: location of effectorfam script
+    :param args: the arguments parsed to argparse
+
+    :type query: string
+    :type database: string
+    :type args: argparse args (dictionary)
+
+    :returns: the path of the effectorFAM file
+    """
+    runDir = os.getcwd()
+    finalFile = os.path.join(runDir, 'scratch', os.path.basename(query)+'.effect') 
+    print finalFile
+    if not os.path.exists(finalFile):
+        if not os.path.exists('scratch'): os.mkdir('scratch')
+        os.chdir(effectorloc)
+        subprocess.call([ effectorloc + '/effectorfam_search.pl', query, \
+            os.path.join(effectorloc, 'EffectorFAMdb')])
+        shutil.copy(os.path.join(effectorloc, 'effectorfam_results.txt'), \
+            finalFile) 
+        os.chdir(runDir)
+    return finalFile
+
+
+def effector_parse(effector_results):
+    """
+    :param effector_results: Results table from effectorFAM
+
+    :type effector_results: string
+
+    :rtype: list of satifying hit names
+    """
+    f = open(effector_results,'r')
+    hits = []
+    for line in f.readlines():
+        ar = line.split('\t')
+        if ar[2] != 'HMM ID':
+            hits.append('%s-%s' %(ar[2], ar[3].split('Type 3')[0].strip()) )
+    return hits
 
 def core(args):
     """
@@ -338,7 +422,12 @@ def core(args):
     args = util.ensure_paths_for_args(args)   
     configObject = config.SeqFindRConfig()
     util.init_output_dirs(args.output)
-    query_list, query_classes = prepare_queries(args)
+    ###### EFFECTOR FAM INPUt CHANGE #####
+    if args.effector != None:
+        query_list, query_classes = effector_queries(args)
+        print query_list
+    else:
+        query_list, query_classes = prepare_queries(args)
     results_a, ylab = do_run(args, args.assembly_dir, ASS_WT, query_list)
     if args.cons != None:
         args = strip_bases(args)
@@ -379,11 +468,12 @@ def core(args):
 if __name__ == '__main__':
     try:
         start_time = time.time()
-        
         parser = argparse.ArgumentParser(description=__doc__, epilog=epi)
         algorithm = parser.add_argument_group('Optional algorithm options', 
                                     ('Options relating to the SeqFindR '
                                         'algorithm'))
+        parser.add_argument('--effector', action='store', 
+                                default=False, help='Use EffectorFAM')
         io = parser.add_argument_group('Optional input/output options', 
                                     ('Options relating to input and output'))
 

@@ -1,0 +1,3 @@
+[submodule "EffectorFam"]
+	path = EffectorFam
+	url = https://github.com/NathanBachmann/EffectorFam.git
